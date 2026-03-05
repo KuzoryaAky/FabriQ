@@ -1,0 +1,19 @@
+﻿<!DOCTYPE html>
+<html>
+<body>
+    <h1>Тест подключения</h1>
+    <div id="status">Проверка...</div>
+    <script>
+        fetch('/api/test/ping')
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('status').innerHTML =
+                    'Успех! Сервер: ' + data.message;
+            })
+            .catch(e => {
+                document.getElementById('status').innerHTML =
+                    'Ошибка: ' + e.message;
+            });
+    </script>
+</body>
+</html>
