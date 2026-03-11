@@ -1,4 +1,5 @@
-﻿using ImageProcessor.Models.Requests;
+﻿using ImageProcessor.Infrastructure.Data;
+using ImageProcessor.Models.Requests;
 using ImageProcessor.Models.Responses;
 using ImageProcessor.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
@@ -12,9 +13,11 @@ namespace ImageProcessor.Controllers
         private readonly IImageProcessingService _processingService;
         private static long _counter = 0;
         private readonly ILogger<MeasurementController> _logger;
+        private readonly AppDbContext _context;
 
-        public MeasurementController(IImageProcessingService processingService, ILogger<MeasurementController> logger)
+        public MeasurementController(IImageProcessingService processingService, ILogger<MeasurementController> logger, AppDbContext context)
         {
+            _context = context;
             _processingService = processingService;
             _logger = logger;
         }
