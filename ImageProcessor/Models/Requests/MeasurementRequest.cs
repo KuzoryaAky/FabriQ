@@ -4,6 +4,8 @@ namespace ImageProcessor.Models.Requests
 {
     public class MeasurementRequest
     {
+        int Id { get; set; }
+
         [Required(ErrorMessage = "Image is required 1")]
         public IFormFile Image { get; set; }
 

@@ -1,4 +1,5 @@
 ﻿using ImageProcessor.Infrastructure.Data;
+using ImageProcessor.Models.Entities;
 using ImageProcessor.Models.Requests;
 using ImageProcessor.Models.Responses;
 using ImageProcessor.Services.Interfaces;
@@ -61,6 +62,52 @@ namespace ImageProcessor.Controllers
             Console.WriteLine($"Запрос #{count}");
             Console.WriteLine("-----------------------------------------------------");
             return Ok("API работает");
+        }
+
+        // Метод для загрузки фото в БД и возращает на телефон id фотографии
+        [HttpPut("putImage")]
+        [ProducesResponseType(typeof(MeasurementResponse), 200)]
+        [ProducesResponseType(typeof(MeasurementResponse), 400)]
+        public async Task<IActionResult> PutImageToDbAndReturnID([FromForm] MeasurementRequest request)
+        {
+            try
+            {
+                if (request?.Image == null)
+                {
+                    return BadRequest(new MeasurementResponse
+                    {
+                        Success = false,
+                    });
+                }
+
+                string fileName = request.Image.FileName;
+                byte[] imageBytes;
+                using (var memoryStream = new MemoryStream())
+                {
+                    await request.Image.CopyToAsync(memoryStream);
+                    imageBytes = memoryStream.ToArray();
+                }
+
+                MeasurementRecord putImage = new()
+                {
+                    FileName = fileName,
+                    ImageData = imageBytes,
+                    ProcessedDate = DateTime.UtcNow
+                };
+
+                await _context.MeasurementRecords.AddAsync(putImage);
+
+                await _context.SaveChangesAsync();
+
+                return Ok(putImage.Id);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new MeasurementResponse
+                {
+                    Success = false,
+                });
+            }
         }
     } 
 }
