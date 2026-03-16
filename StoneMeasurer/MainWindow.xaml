@@ -233,7 +233,7 @@
                                 </Button.Resources>
                             </Button>
 
-                            <Button x:Name="AutoDetect" 
+                            <!--<Button x:Name="AutoDetect" 
                                     Content="Авто-детекция контура" 
                                     Click="AutoDetect_Click"
                                     Margin="5,0,5,0"
@@ -247,7 +247,7 @@
                                         <Setter Property="CornerRadius" Value="4"/>
                                     </Style>
                                 </Button.Resources>
-                            </Button>
+                            </Button>-->
                             
                             
                             <Button x:Name="ClearSelectionButton" 
