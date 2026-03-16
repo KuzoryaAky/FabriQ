@@ -4,6 +4,7 @@ using ImageProcessor.Models.Requests;
 using ImageProcessor.Models.Responses;
 using ImageProcessor.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace ImageProcessor.Controllers
 {
@@ -73,12 +74,10 @@ namespace ImageProcessor.Controllers
             try
             {
                 if (request?.Image == null)
-                {
                     return BadRequest(new MeasurementResponse
                     {
                         Success = false,
                     });
-                }
 
                 string fileName = request.Image.FileName;
                 byte[] imageBytes;
@@ -107,6 +106,44 @@ namespace ImageProcessor.Controllers
                 {
                     Success = false,
                 });
+            }
+        }
+
+        [HttpGet("getDetectImage")]
+        [ProducesResponseType(typeof(MeasurementResponse), 200)]
+        [ProducesResponseType(typeof(MeasurementResponse), 400)]
+        public async Task<IActionResult> GetDetectImage([FromQuery]int id)
+        {
+            try
+            {
+                if (id is 0)
+                    return BadRequest(new MeasurementResponse
+                    {
+                        Success = false,
+                        Error = $"Неверный ID фотографии"
+                    });
+
+                MeasurementRecord imageData = await _context.MeasurementRecords.Where(data => data.Id == id).FirstAsync();
+
+                if (imageData is null)
+                    return BadRequest(new MeasurementResponse
+                    {
+                        Success = false,
+                        Error = $"Не найден ID фотографии"
+                    });
+
+                return Ok(imageData);
+            }
+            catch (Exception ex)
+            {
+                var errorResponse = new MeasurementResponse
+                {
+                    Success = false,
+                    WidthMm = 0,
+                    HeightMm = 0,
+                    Error = $"Ошибка обработки: {ex.Message}"
+                };
+                return BadRequest(errorResponse);
             }
         }
     } 
