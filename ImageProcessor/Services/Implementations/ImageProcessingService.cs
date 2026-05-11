@@ -1,201 +1,188 @@
-﻿using ImageProcessor.Models.Entities;
+﻿using System.Drawing;
+using System.Linq.Expressions;
+using Emgu.CV;
+using Emgu.CV.CvEnum;
+using Emgu.CV.Structure;
+using Emgu.CV.Util;
 using ImageProcessor.Models.Requests;
 using ImageProcessor.Models.Responses;
 using ImageProcessor.Services.Interfaces;
 
-namespace ImageProcessor.Services
+
+public class ImageProcessingService : IImageProcessingService
 {
-    public class ImageProcessingService : IImageProcessingService
+    private readonly ILogger<ImageProcessingService> _logger;
+
+    public ImageProcessingService(ILogger<ImageProcessingService> logger)
     {
-        private readonly ILogger<ImageProcessingService> _logger;
+        _logger = logger;
+    }
 
-        public ImageProcessingService(ILogger<ImageProcessingService> logger)
+    public async Task<MeasurementResponse> ProcessImageAsync(MeasurementRequest request)
+    {
+        double threshold = 100;
+        if (request.Image == null || request.Image.Length == 0)
+            throw new ArgumentException("Изображение не может быть пустым");
+
+        Mat result = null;
+        Mat original = null;
+        Mat gray = null;
+        Mat blurred = null;
+        Mat edges = null;
+        VectorOfVectorOfPoint contours = null;
+        MemoryStream ms = null;
+
+        try
         {
-            _logger = logger;
+            byte[] imageBytes;
+            using (var memoryStream = new MemoryStream())
+            {
+                await request.Image.CopyToAsync(memoryStream);
+                imageBytes = memoryStream.ToArray();
+            }
+
+            // Базовая папка для сохранения
+            string baseFolder = "D:\\Projects\\source\\repos\\FabriQ\\ImageProcessor\\Uploads";
+            string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+
+            // Создаем подпапку для этапов обработки
+            string processingFolder = Path.Combine(baseFolder, $"processing_{timestamp}");
+            Directory.CreateDirectory(processingFolder);
+
+            // ШАГ 1: Загружаем изображение из байт
+            original = new Mat();
+            CvInvoke.Imdecode(imageBytes, ImreadModes.AnyColor, original);
+
+            if (original.IsEmpty)
+                throw new Exception("Не удалось загрузить изображение");
+
+            // Сохраняем оригинал
+            SaveMatToFile(original, Path.Combine(processingFolder, "01_original.png"));
+
+            // ШАГ 2: Конвертируем в оттенки серого
+            gray = new Mat();
+            CvInvoke.CvtColor(original, gray, ColorConversion.Bgr2Gray);
+            SaveMatToFile(gray, Path.Combine(processingFolder, "02_grayscale.png"));
+
+            // ШАГ 3: Размытие для уменьшения шума
+            blurred = new Mat();
+            CvInvoke.GaussianBlur(gray, blurred, new System.Drawing.Size(5, 5), 1.5);
+            SaveMatToFile(blurred, Path.Combine(processingFolder, "03_blurred.png"));
+
+            // ШАГ 4: Поиск границ Canny
+            edges = new Mat();
+            CvInvoke.Canny(blurred, edges, threshold, threshold * 2);
+            SaveMatToFile(edges, Path.Combine(processingFolder, "04_edges.png"));
+
+            // ШАГ 5: Поиск контуров
+            contours = new VectorOfVectorOfPoint();
+            CvInvoke.FindContours(
+                edges,
+                contours,
+                null,
+                RetrType.External,
+                ChainApproxMethod.ChainApproxSimple
+            );
+
+            // ШАГ 6: Создаем изображения для визуализации контуров
+
+            // Вариант А: Контуры на черном фоне
+            Mat contoursOnly = new Mat(edges.Size, DepthType.Cv8U, 3);
+            contoursOnly.SetTo(new MCvScalar(0, 0, 0)); // Черный фон
+
+            for (int i = 0; i < contours.Size; i++)
+            {
+                CvInvoke.DrawContours(
+                    contoursOnly,
+                    contours,
+                    i,
+                    new MCvScalar(0, 255, 0), // Зеленые контуры
+                    1 // Толщина линии
+                );
+            }
+            SaveMatToFile(contoursOnly, Path.Combine(processingFolder, "05_contours_black_bg.png"));
+            contoursOnly.Dispose();
+
+            // Вариант Б: Контуры на оригинальном изображении (полутоновое)
+            Mat contoursOnGray = gray.Clone();
+            CvInvoke.CvtColor(contoursOnGray, contoursOnGray, ColorConversion.Gray2Bgr);
+
+            for (int i = 0; i < contours.Size; i++)
+            {
+                CvInvoke.DrawContours(
+                    contoursOnGray,
+                    contours,
+                    i,
+                    new MCvScalar(0, 255, 0), // Зеленые контуры
+                    2
+                );
+            }
+            SaveMatToFile(contoursOnGray, Path.Combine(processingFolder, "06_contours_on_gray.png"));
+            contoursOnGray.Dispose();
+
+            // Вариант В: Контуры на оригинальном цветном изображении
+            result = original.Clone();
+
+            for (int i = 0; i < contours.Size; i++)
+            {
+                CvInvoke.DrawContours(
+                    result,
+                    contours,
+                    i,
+                    new MCvScalar(0, 255, 0), // BGR: зеленый
+                    2
+                );
+            }
+
+            // Сохраняем финальный результат
+            SaveMatToFile(result, Path.Combine(processingFolder, "07_final_result.png"));
+
+            // Сохраняем также финальный результат в основную папку
+            string finalPath = Path.Combine(baseFolder, $"image_{timestamp}.png");
+            SaveMatToFile(result, finalPath);
+
+            Console.WriteLine($"Все этапы обработки сохранены в папку: {processingFolder}");
+
+            return default;
         }
-
-        public async Task<MeasurementResponse> ProcessImageAsync(MeasurementRequest request)
+        catch (Exception ex)
         {
-            string savedFilePath = null;
-
-            try
-            {
-                Console.WriteLine("\n" + new string('=', 50));
-                Console.WriteLine("=== НАЧАЛО ОБРАБОТКИ ===");
-
-                if (request.Image == null || request.Image.Length == 0)
-                    throw new ArgumentException("Файл не загружен или пустой");
-
-                savedFilePath = await SaveUploadedFile(request);
-
-
-                if (File.Exists(savedFilePath))
-                {
-                    var detectionResult = StrictRectangleDetector.FindMainRectangle(savedFilePath);
-                
-                    if (detectionResult.Success)
-                    {
-                        Console.WriteLine($"✅ Найден главный прямоугольник!");
-                        Console.WriteLine($"   Углы: ");
-                        for (int i = 0; i < detectionResult.Corners.Length; i++)
-                        {
-                            Console.WriteLine($"   [{i}] ({detectionResult.Corners[i].X}, {detectionResult.Corners[i].Y})");
-                        }
-                    }
-                    else
-                    {
-                        Console.WriteLine($"❌ Не удалось найти прямоугольник: {detectionResult.Error}");
-                    }
-                }
-
-
-                if (File.Exists(savedFilePath))
-                {
-                    OpenCvExperiment.TestOpenCVWithDebug(savedFilePath);
-                }
-
-                return new MeasurementResponse
-                {
-                    Success = true,
-                    WidthMm = 600.5,      // TODO: Заменить на реальные значения из детекции
-                    HeightMm = 400.2,     // TODO: Заменить на реальные значения из детекции
-                    Error = null,
-                    ProcessingTime = DateTime.UtcNow,
-                    FileName = request.Image.FileName,
-                    FileSizeBytes = request.Image.Length,
-                    Confidence = 0.95,    // TODO: Заменить на реальное значение
-                    MaterialType = "stone" // TODO: Заменить на реальное значение
-                };
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Критическая ошибка обработки");
-
-                return new MeasurementResponse
-                {
-                    Success = false,
-                    WidthMm = 0,
-                    HeightMm = 0,
-                    Error = $"Ошибка обработки: {ex.Message}",
-                    ProcessingTime = DateTime.UtcNow
-                };
-            }
-            finally
-            {
-                _logger.LogInformation("=== ОБРАБОТКА ЗАВЕРШЕНА ===");
-            }
+            Console.WriteLine(ex.Message);
+            return null;
         }
-
-        public async Task<MeasurementResponse> ProcessImageAsync(MeasurementRecord request)
+        finally
         {
-            string savedFilePath = null;
-
-            try
-            {
-                Console.WriteLine("\n" + new string('=', 50));
-                Console.WriteLine("=== НАЧАЛО ОБРАБОТКИ ===");
-
-                if (request.ImageData == null || request.ImageData.Length == 0)
-                    throw new ArgumentException("Файл не загружен или пустой");
-
-                savedFilePath = await SaveUploadedFile(request);
-
-                if (File.Exists(savedFilePath))
-                {
-                    var detectionResult = StrictRectangleDetector.FindMainRectangle(savedFilePath);
-
-                    if (detectionResult.Success)
-                    {
-                        Console.WriteLine($"✅ Найден главный прямоугольник!");
-                        Console.WriteLine($"   Углы: ");
-                        for (int i = 0; i < detectionResult.Corners.Length; i++)
-                        {
-                            Console.WriteLine($"   [{i}] ({detectionResult.Corners[i].X}, {detectionResult.Corners[i].Y})");
-                        }
-                    }
-                    else
-                    {
-                        Console.WriteLine($"❌ Не удалось найти прямоугольник: {detectionResult.Error}");
-                    }
-                }
-
-
-                if (File.Exists(savedFilePath))
-                {
-                    OpenCvExperiment.TestOpenCVWithDebug(savedFilePath);
-                }
-
-                return new MeasurementResponse
-                {
-                    Success = true,
-                    WidthMm = 600.5,  // TODO: Заменить на реальные значения из детекции
-                    HeightMm = 400.2, // TODO: Заменить на реальные значения из детекции
-                    Error = null,
-                    ProcessingTime = DateTime.UtcNow,
-                    FileSizeBytes = request.ImageData.Length,
-                    Confidence = 0.95,    // TODO: Заменить на реальное значение
-                    MaterialType = "stone" // TODO: Заменить на реальное значение
-                };
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Критическая ошибка обработки");
-
-                return new MeasurementResponse
-                {
-                    Success = false,
-                    WidthMm = 0,
-                    HeightMm = 0,
-                    Error = $"Ошибка обработки: {ex.Message}",
-                    ProcessingTime = DateTime.UtcNow
-                };
-            }
-            finally
-            {
-                _logger.LogInformation("=== ОБРАБОТКА ЗАВЕРШЕНА ===");
-            }
-        }
-
-        private async Task<string> SaveUploadedFile(MeasurementRecord request)
-        {
-            var debugFolder = Path.Combine(Directory.GetCurrentDirectory(), "DebugUploads");
-            if (!Directory.Exists(debugFolder))
-                Directory.CreateDirectory(debugFolder);
-
-            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            var safeFileName = $"{timestamp}_{Guid.NewGuid():N}.jpg";
-            var savePath = Path.Combine(debugFolder, safeFileName);
-
-            using var memoryStream = new MemoryStream(request.ImageData);
-            using var fileStream = new FileStream(savePath, FileMode.Create, FileAccess.Write);
-            await memoryStream.CopyToAsync(fileStream);
-
-            Console.WriteLine($"💾 Файл сохранён: {savePath}");
-            Console.WriteLine($"   Размер: {request.ImageData.Length} байт");
-
-            return savePath;
-        }
-
-        private async Task<string> SaveUploadedFile(MeasurementRequest request)
-        {
-            var debugFolder = Path.Combine(Directory.GetCurrentDirectory(), "DebugUploads");
-            if (!Directory.Exists(debugFolder))
-                Directory.CreateDirectory(debugFolder);
-
-            var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            var safeFileName = $"{timestamp}_{Guid.NewGuid():N}.jpg";
-            var savePath = Path.Combine(debugFolder, safeFileName);
-
-            using var memoryStream = new MemoryStream();
-            await request.Image.CopyToAsync(memoryStream);
-            var fileBytes = memoryStream.ToArray();
-
-            await System.IO.File.WriteAllBytesAsync(savePath, fileBytes);
-
-            Console.WriteLine($"💾 Файл сохранён: {savePath}");
-            Console.WriteLine($"   Размер: {fileBytes.Length} байт");
-
-            return savePath;
+            // Важно! Освобождаем все ресурсы
+            original?.Dispose();
+            gray?.Dispose();
+            blurred?.Dispose();
+            edges?.Dispose();
+            contours?.Dispose();
+            result?.Dispose();
+            ms?.Dispose();
         }
     }
+
+    //// Вспомогательный метод для сохранения Mat в файл
+    private void SaveMatToFile(Mat mat, string filePath)
+    {
+        try
+        {
+            VectorOfByte buffer = new VectorOfByte();
+            CvInvoke.Imencode(".png", mat, buffer);
+            File.WriteAllBytes(filePath, buffer.ToArray());
+            buffer.Dispose();
+            Console.WriteLine($"Сохранено: {Path.GetFileName(filePath)}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Ошибка при сохранении {filePath}: {ex.Message}");
+        }
+    }
+
+
+    //public async Task<MeasurementResponse> ProcessImageAsync(MeasurementRequest request)
+    //{
+    //    return default;
+    //}
 }

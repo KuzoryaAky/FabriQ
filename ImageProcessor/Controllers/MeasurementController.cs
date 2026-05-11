@@ -13,7 +13,6 @@ namespace ImageProcessor.Controllers
     public class MeasurementController : ControllerBase
     {
         private readonly IImageProcessingService _processingService;
-        private static long _counter = 0;
         private readonly ILogger<MeasurementController> _logger;
         private readonly AppDbContext _context;
 
@@ -24,48 +23,21 @@ namespace ImageProcessor.Controllers
             _logger = logger;
         }
 
-        // Этот метод будет вызываться при POST запросе на /api/Measurement
-        [HttpPost("measure")]
-        [ProducesResponseType(typeof(MeasurementResponse), 200)]
-        [ProducesResponseType(typeof(MeasurementResponse), 400)]
-        public async Task<IActionResult> Measure([FromForm] MeasurementRequest request)
+        //// Простой метод для проверки, что API работает
+        [HttpPost("testDetecter")]
+        public async Task<IActionResult> Test([FromForm] MeasurementRequest response)
         {
-            try
-            {
-                // Передаём запрос в сервис для обработки
-                var response = await _processingService.ProcessImageAsync(request);
-                return Ok(response);
-            }
-            catch (Exception ex)
-            {
-                // Если что-то пошло не так
-                var errorResponse = new MeasurementResponse
-                {
-                    Success = false,
-                    WidthMm = 0,
-                    HeightMm = 0,
-                    Error = $"Ошибка обработки: {ex.Message}"
-                };
-                return BadRequest(errorResponse);
-            }
+            var test = await _processingService.ProcessImageAsync(response);
+
+            return Ok("Детектер отработал, проверяй");
         }
 
-        // Простой метод для проверки, что API работает
-        [HttpGet("test")]
-        public IActionResult Test()
-        {
-            var clientIp = HttpContext.Connection.RemoteIpAddress?.ToString();
-            var userAgent = HttpContext.Request.Headers["User-Agent"].ToString();
-            var count = Interlocked.Increment(ref _counter);
 
-            Console.WriteLine($"Запрос от IP: {clientIp}");
-            Console.WriteLine($"User-Agent: {userAgent}");
-            Console.WriteLine($"Запрос #{count}");
-            Console.WriteLine("-----------------------------------------------------");
-            return Ok("API работает");
-        }
-
-        // Метод для загрузки фото в БД и возращает на телефон id фотографии
+        /// <summary>
+        /// Метод для детекции и загрузки её в БД
+        /// </summary>
+        /// <param name="request">принимает фотографию которой нужна детекция</param>
+        /// <returns>возращает на телефон id фотографии</returns>
         [HttpPut("putImage")]
         [ProducesResponseType(typeof(MeasurementResponse), 200)]
         [ProducesResponseType(typeof(MeasurementResponse), 400)]
@@ -94,6 +66,14 @@ namespace ImageProcessor.Controllers
                     ProcessedDate = DateTime.UtcNow
                 };
 
+                MeasurementRequest data = new()
+                {
+                    Image = request.Image
+                };
+
+
+                _ = Task.Run(() => _processingService.ProcessImageAsync(data));
+
                 await _context.MeasurementRecords.AddAsync(putImage);
 
                 await _context.SaveChangesAsync();
@@ -109,6 +89,11 @@ namespace ImageProcessor.Controllers
             }
         }
 
+        /// <summary>
+        /// Возщает фотографию с детекцией(на которой уже нашлись контуры и опредилился размер материала)
+        /// </summary>
+        /// <param name="id">id фотографии которой нужно получить из базы</param>
+        /// <returns></returns>
         [HttpGet("getDetectImage")]
         [ProducesResponseType(typeof(MeasurementResponse), 200)]
         [ProducesResponseType(typeof(MeasurementResponse), 400)]
