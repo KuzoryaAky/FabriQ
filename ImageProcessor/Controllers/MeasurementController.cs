@@ -1,135 +1,156 @@
-﻿using ImageProcessor.Infrastructure.Data;
+﻿using System.Text.Json;
+using FabriQ.Models.DTOs;
+using ImageProcessor.Infrastructure.Data;
+using ImageProcessor.Models.DTOs;
 using ImageProcessor.Models.Entities;
-using ImageProcessor.Models.Requests;
-using ImageProcessor.Models.Responses;
 using ImageProcessor.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-namespace ImageProcessor.Controllers
+[ApiController]
+[Route("api/[controller]")]
+public class MeasurementController : ControllerBase
 {
-    [Route("api/[controller]")]
-    [ApiController]
-    public class MeasurementController : ControllerBase
+    private readonly AppDbContext _dbContext;
+    private readonly IBackgroundTaskQueue _taskQueue; // простая очередь в памяти
+
+    public MeasurementController(AppDbContext dbContext, IBackgroundTaskQueue taskQueue)
     {
-        private readonly IImageProcessingService _processingService;
-        private readonly ILogger<MeasurementController> _logger;
-        private readonly AppDbContext _context;
+        _dbContext = dbContext;
+        _taskQueue = taskQueue;
+    }
 
-        public MeasurementController(IImageProcessingService processingService, ILogger<MeasurementController> logger, AppDbContext context)
+    // 1. Принять фото → сразу вернуть ID
+    [HttpPost("process-image")]
+    public async Task<ActionResult<ProcessResponse>> ProcessImage(IFormFile file)
+    {
+        // Валидация
+        if (file == null || file.Length == 0)
+            return BadRequest(new { error = "File is empty" });
+        if (file.Length > 10 * 1024 * 1024)
+            return BadRequest(new { error = "File too large (max 10 MB)" });
+
+        var allowedTypes = new[] { "image/jpeg", "image/png" };
+        if (!allowedTypes.Contains(file.ContentType))
+            return BadRequest(new { error = "Only JPEG/PNG allowed" });
+
+        // Конвертируем файл в byte[]
+        using var memoryStream = new MemoryStream();
+        await file.CopyToAsync(memoryStream);
+        var imageData = memoryStream.ToArray();
+
+        // Создаём запись в БД (ваша модель + новые поля)
+        var record = new MeasurementRecord
         {
-            _context = context;
-            _processingService = processingService;
-            _logger = logger;
+            FileName = file.FileName,
+            ImageData = imageData,
+            Status = "pending",
+            CreatedAt = DateTime.UtcNow,
+            RequestGuid = Guid.NewGuid()
+        };
+
+        _dbContext.MeasurementRecords.Add(record);
+        await _dbContext.SaveChangesAsync();
+
+        // Отправляем в фоновую очередь
+        _taskQueue.QueueBackgroundWorkItem(async token =>
+        {
+            await ProcessImageAsync(record.Id, token);
+        });
+
+        return Accepted(new ProcessResponse
+        {
+            RequestId = record.RequestGuid,
+            Status = "pending",
+            Message = "Use GET /status/{id} to check progress"
+        });
+    }
+
+    // 2. Проверить статус
+    [HttpGet("status/{requestId:guid}")]
+    public async Task<ActionResult<StatusResponse>> GetStatus(Guid requestId)
+    {
+        var record = await _dbContext.MeasurementRecords
+            .FirstOrDefaultAsync(r => r.RequestGuid == requestId);
+
+        if (record == null)
+            return NotFound(new { error = "Request not found" });
+
+        return new StatusResponse
+        {
+            RequestId = requestId,
+            Status = record.Status,
+            CreatedAt = record.CreatedAt,
+            CompletedAt = record.CompletedAt,
+            ErrorMessage = record.ErrorMessage
+        };
+    }
+
+    // 3. Получить результат
+    [HttpGet("result/{requestId:guid}")]
+    public async Task<ActionResult<ResultResponse>> GetResult(Guid requestId)
+    {
+        var record = await _dbContext.MeasurementRecords
+            .FirstOrDefaultAsync(r => r.RequestGuid == requestId);
+
+        if (record == null)
+            return NotFound(new { error = "Request not found" });
+
+        if (record.Status == "pending" || record.Status == "processing")
+            return BadRequest(new { error = "Not ready yet" });
+
+        if (record.Status == "failed")
+            return StatusCode(500, new ResultResponse
+            {
+                RequestId = requestId,
+                Status = "failed",
+                ErrorMessage = record.ErrorMessage
+            });
+
+        // Десериализуем JSON результат
+        var result = JsonSerializer.Deserialize<ResultResponse>(record.ResultJson ?? "{}");
+        result.RequestId = requestId;
+        return Ok(result);
+    }
+
+    // Фоновая обработка (реальная)
+    private async Task ProcessImageAsync(int recordId, CancellationToken token)
+    {
+        using var scope = _dbContext;
+        var record = await scope.MeasurementRecords.FindAsync(recordId);
+        if (record == null) return;
+
+        try
+        {
+            // Обновляем статус
+            record.Status = "processing";
+            await scope.SaveChangesAsync(token);
+
+            // ВАША РЕАЛЬНАЯ ОБРАБОТКА
+            // var result = YourImageProcessor.Process(record.ImageData);
+
+            // ПОКА МОК-ДАННЫЕ
+            var mockResult = new
+            {
+                stones = new[]
+                {
+                    new { id = 1, coordinates = new[] { new[] { 10, 10 }, new[] { 50, 10 }, new[] { 30, 40 } }, areaPx = 450 }
+                },
+                totalTimeMs = 123
+            };
+
+            record.ResultJson = JsonSerializer.Serialize(mockResult);
+            record.Status = "completed";
+            record.CompletedAt = DateTime.UtcNow;
+            record.ProcessedDate = DateTime.UtcNow; // ваше старое поле
+        }
+        catch (Exception ex)
+        {
+            record.Status = "failed";
+            record.ErrorMessage = ex.Message;
+            record.CompletedAt = DateTime.UtcNow;
         }
 
-        //// Простой метод для проверки, что API работает
-        [HttpPost("testDetecter")]
-        public async Task<IActionResult> Test([FromForm] MeasurementRequest response)
-        {
-            var test = await _processingService.ProcessImageAsync(response);
-
-            return Ok("Детектер отработал, проверяй");
-        }
-
-
-        /// <summary>
-        /// Метод для детекции и загрузки её в БД
-        /// </summary>
-        /// <param name="request">принимает фотографию которой нужна детекция</param>
-        /// <returns>возращает на телефон id фотографии</returns>
-        [HttpPut("putImage")]
-        [ProducesResponseType(typeof(MeasurementResponse), 200)]
-        [ProducesResponseType(typeof(MeasurementResponse), 400)]
-        public async Task<IActionResult> PutImageToDbAndReturnID([FromForm] MeasurementRequest request)
-        {
-            try
-            {
-                if (request?.Image == null)
-                    return BadRequest(new MeasurementResponse
-                    {
-                        Success = false,
-                    });
-
-                string fileName = request.Image.FileName;
-                byte[] imageBytes;
-                using (var memoryStream = new MemoryStream())
-                {
-                    await request.Image.CopyToAsync(memoryStream);
-                    imageBytes = memoryStream.ToArray();
-                }
-
-                MeasurementRecord putImage = new()
-                {
-                    FileName = fileName,
-                    ImageData = imageBytes,
-                    ProcessedDate = DateTime.UtcNow
-                };
-
-                MeasurementRequest data = new()
-                {
-                    Image = request.Image
-                };
-
-
-                _ = Task.Run(() => _processingService.ProcessImageAsync(data));
-
-                await _context.MeasurementRecords.AddAsync(putImage);
-
-                await _context.SaveChangesAsync();
-
-                return Ok(putImage.Id);
-            }
-            catch (Exception ex)
-            {
-                return BadRequest(new MeasurementResponse
-                {
-                    Success = false,
-                });
-            }
-        }
-
-        /// <summary>
-        /// Возщает фотографию с детекцией(на которой уже нашлись контуры и опредилился размер материала)
-        /// </summary>
-        /// <param name="id">id фотографии которой нужно получить из базы</param>
-        /// <returns></returns>
-        [HttpGet("getDetectImage")]
-        [ProducesResponseType(typeof(MeasurementResponse), 200)]
-        [ProducesResponseType(typeof(MeasurementResponse), 400)]
-        public async Task<IActionResult> GetDetectImage([FromQuery]int id)
-        {
-            try
-            {
-                if (id is 0)
-                    return BadRequest(new MeasurementResponse
-                    {
-                        Success = false,
-                        Error = $"Неверный ID фотографии"
-                    });
-
-                MeasurementRecord imageData = await _context.MeasurementRecords.Where(data => data.Id == id).FirstAsync();
-
-                if (imageData is null)
-                    return BadRequest(new MeasurementResponse
-                    {
-                        Success = false,
-                        Error = $"Не найден ID фотографии"
-                    });
-
-                return Ok(imageData);
-            }
-            catch (Exception ex)
-            {
-                var errorResponse = new MeasurementResponse
-                {
-                    Success = false,
-                    WidthMm = 0,
-                    HeightMm = 0,
-                    Error = $"Ошибка обработки: {ex.Message}"
-                };
-                return BadRequest(errorResponse);
-            }
-        }
-    } 
+        await scope.SaveChangesAsync(token);
+    }
 }
