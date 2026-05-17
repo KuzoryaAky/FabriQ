@@ -19,6 +19,8 @@ namespace ImageProcessor
             builder.Services.AddControllers();
 
             builder.Services.AddScoped<IImageProcessingService, ImageProcessingService>();
+            builder.Services.AddSingleton<IBackgroundTaskQueue, BackgroundTaskQueue>();
+            builder.Services.AddHostedService<QueuedHostedService>();
             builder.Services.AddEndpointsApiExplorer();
 
             builder.Services.AddCors(options =>
